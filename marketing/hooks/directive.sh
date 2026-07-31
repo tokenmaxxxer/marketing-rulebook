@@ -11,7 +11,10 @@ YOU DECIDE: 어떤 메시지로 어떤 채널에 도달할지
 
 USE_WHEN: 캠페인/포지셔닝이 걸릴 때
 
-PRODUCES (required record fields): messaging doc, channel plan, target segment
+PRODUCES (required record fields):
+  messaging doc (positioning canvas — see docs/issue-1/proposals/rulebook-maturation.md §b),
+  channel plan (Bullseye 3-phase test — see same),
+  target segment (STP + ICP — see same)
 
 WRITE_SCOPE: []
 
