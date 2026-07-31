@@ -20,13 +20,16 @@ claude plugin install marketing
 ## Layout
 
 - `marketing/.claude-plugin/plugin.json` — plugin manifest
-- `marketing/hooks/hooks.json` — SessionStart + PreToolUse wiring
-- `marketing/hooks/directive.sh` — SessionStart role directive
-- `marketing/hooks/record-fields-gate.sh` — this role's record required-field gate
-- `marketing/hooks/trailer-gate.sh` — commit `Subject: issue-<n>` trailer gate
-- `marketing/hooks/handbook-trigger-gate.sh` — s21 handbook-sync gate
-- `marketing/agents/warrant-hunter.md` — rotating-stance hunt agent
+- `marketing/hooks/hooks.json` — SessionStart wiring (role-agnostic gates now live in core, see below)
+- `marketing/hooks/directive.sh` — SessionStart role directive (thin stub over core's `core_role_directive`)
+- `marketing/hooks/lib/role-config.sh` — this role's record-fields/record-path config, consumed by core's record-fields-gate canon
 - `docs/specs/approvers.md` — Approve-authority allowlist (see below)
+
+The record-fields gate, the commit trailer gate, and the s21 handbook-sync
+gate no longer have role-local copies in this repo — they are registered
+role-agnostically in `core/hooks/` (core issue #66). Warrant-hunt coverage
+for this role is provided by core's `warrant/` plugin (core issue #63);
+this rulebook carries no local hunt agent.
 
 This is scaffolding, not a finished rulebook: fill in doctrine detail,
 handoff enforcement, and any role-specific progress gate before treating
