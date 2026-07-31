@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# SessionStart: marketing's role directive — how this role fills the core
-# lifecycle. Kill switch: export MARKETING_CYCLE_OFF=1
-trap 'rc=$?; if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then exit 2; fi' EXIT
+# SessionStart: marketing's role directive — thin stub over core canon.
+# Shared mechanics (kill-switch, CLAUDE_ROLE gate, fail-closed trap,
+# directive emission) live in core_role_directive; only this role's own
+# directive content is defined here.
 set -uo pipefail
+source "${CLAUDE_PLUGIN_ROOT}/../core/hooks/lib/role-directive.sh"
 
-case "${MARKETING_CYCLE_OFF:-}" in ""|0|false|no|off) ;; *) trap - EXIT; exit 0 ;; esac
-[ "${CLAUDE_ROLE:-}" = "marketing" ] || { trap - EXIT; exit 0; }
-
-cat <<'DIRECTIVE'
-[marketing] Role directive (on top of core's protocol):
-
+core_role_directive "marketing" <<'DIRECTIVE'
 YOU DECIDE: 어떤 메시지로 어떤 채널에 도달할지
 
 USE_WHEN: 캠페인/포지셔닝이 걸릴 때
