@@ -1,0 +1,5 @@
+{
+  "name": "marketing-channel",
+  "description": "Bullseye 3-phase-test methodology gate and directive fragment for marketing's channel-plan record field, including the intra-field brainstorm-before-select ordering check.",
+  "author": { "name": "Jung Jiwon & Lee Jongkwan" }
+}
