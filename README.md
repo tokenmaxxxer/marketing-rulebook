@@ -21,21 +21,22 @@ claude plugin install marketing
 
 - `marketing/.claude-plugin/plugin.json` — plugin manifest
 - `marketing/hooks/hooks.json` — SessionStart wiring (role-agnostic gates now live in core, see below)
-- `marketing/hooks/directive.sh` — SessionStart role directive (thin stub over core's `core_role_directive`)
-- `marketing/hooks/lib/role-config.sh` — this role's record-fields/record-path config, consumed by core's record-fields-gate canon
+- `marketing/hooks/directive.sh` — SessionStart role directive (thin stub over core's `core_role_directive`), guarded-sourcing `core/hooks/lib/role-directive.sh`
 - `docs/specs/approvers.md` — Approve-authority allowlist (see below)
 
 The record-fields gate, the commit trailer gate, and the s21 handbook-sync
-gate no longer have role-local copies in this repo — they are intended to
-be registered role-agnostically in `core/hooks/` (core issue #66).
-Warrant-hunt coverage for this role is intended to come from core's
-`warrant/` plugin (core issue #63); this rulebook carries no local hunt
-agent. **As of this writing, no `core/` tree exists in this repository**
-— these are forward-looking references to a shared core canon that has
-not landed here yet (see also core issue #72, `core/hooks/lib/gate-lib.sh`,
-referenced by this rulebook's own methodology gates' fail-closed/kill-switch/
-path-resolution helpers, which remain local per-script implementations of
-the same contract pending that landing).
+gate no longer have role-local copies in this repo — they are registered
+role-agnostically in `core/hooks/` (core issue #66). Warrant-hunt coverage
+for this role comes from core's `warrant/` plugin (core issue #63); this
+rulebook carries no local hunt agent. This role's own methodology gates
+(below) source `core/hooks/lib/gate-lib.sh` by reference — resolved via
+`${CLAUDE_PLUGIN_ROOT_CORE:-${CLAUDE_PLUGIN_ROOT}/../core}` — for their
+fail-closed trap, kill-switch convention, and Bash-write-target detection,
+per `docs/handbooks/gate-house-standard.md`; core is never vendored into
+this repo. A previous `marketing/hooks/lib/role-config.sh` stub, written
+against an unverified guess at core's record-fields-gate shape before core
+landed, has been retired — role-record-fields config is core's canon to
+own once that integration is scoped as its own piece of work.
 
 - `marketing-messaging/`, `marketing-channel/`, `marketing-segment/` — the
   three per-methodology plugins that gate marketing's `messaging doc`,

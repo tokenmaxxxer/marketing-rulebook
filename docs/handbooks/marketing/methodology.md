@@ -1,13 +1,25 @@
 # Marketing methodology plugin set — checklist
 
 Worked guidance for `docs/issue-7/proposals/plugin-deepening-proposal.md`,
-hardened per `docs/issue-10/proposals/gate-a-plus-hardening.md`.
+hardened per `docs/issue-10/proposals/gate-a-plus-hardening.md`, and
+migrated onto core's landed gate-house standard per
+`docs/issue-13/proposals/gate-a-plus-final-close.md`.
 The three plugin gates (`marketing-messaging/hooks/messaging-gate.sh`,
 `marketing-channel/hooks/channel-gate.sh`,
-`marketing-segment/hooks/segment-gate.sh`) enforce the mechanical minimum
-below, each independently and fail-closed; this handbook is the reasoning
-behind each line. Run `tests/run-gate-tests.sh` from repo root to exercise
-all three gates as real subprocesses.
+`marketing-segment/hooks/segment-gate.sh`), plus `marketing/hooks/directive.sh`,
+enforce the mechanical minimum below, each independently and fail-closed;
+this handbook is the reasoning behind each line. Run
+`tests/run-gate-tests.sh` from repo root to exercise all three gates as
+real subprocesses.
+
+All four scripts source core's `gate-lib.sh`/`role-directive.sh` by
+reference — `${CLAUDE_PLUGIN_ROOT_CORE:-${CLAUDE_PLUGIN_ROOT}/../core}`,
+never vendored — with a guarded `|| { ...; exit 2; }` source line, so a
+missing/unreachable core denies rather than silently no-ops. The three
+gates' `hooks.json` matcher and Python dispatch also cover `Bash`-tool
+writes (`gate_bash_write_targets`), not just `Write`/`Edit`/`MultiEdit`, so
+a shell redirect into a gated path is caught the same way a tool call
+would be.
 
 On an in-scope write (`docs/issue-<n>/proposals/*marketing*.md` or
 `docs/issue-<n>/reports/marketing.md`), a missing section marker now
@@ -16,14 +28,22 @@ carry its methodology field explicitly, even to say it is deferred. Once a
 section is found, every check below is scoped to that section's own text
 span (heading/marker to the next heading or EOF), not the whole document;
 checks that key on a comparison word (e.g. "vs.") additionally require it
-to sit near a list item or a named alternative, not stand alone.
+to sit near a list item or a named alternative, not stand alone — the
+anchor search is scoped to a fixed character window around the cue's own
+match position and excludes ordinary sentence-initial capitalization, so a
+bare cue with nothing actually named nearby no longer passes.
 
 ## messaging doc — Dunford positioning canvas
 
 1. **Competitive alternatives** named — the comparison is the point of the
    canvas; a value prop with no named alternative is a shortcut, not a
    positioning statement.
-2. **Unique attributes** stated relative to those alternatives.
+2. **Unique attributes** stated relative to those alternatives — a bare
+   occurrence of the cue word ("unlike", "differentiat-", "unique
+   attributes", "only we") is not enough; it must sit near an actual named
+   attribute or competitor, the same proximity requirement (1) already
+   has, so it can't be satisfied by an unrelated word fragment (e.g.
+   "unlikely").
 3. **Per-segment value proposition** — translated for the specific segment,
    not one generic sentence for everyone.
 4. **Market category** named.
@@ -72,3 +92,11 @@ rather than one monolithic gate. This is the minimum that keeps a
 `messaging doc`/`channel plan`/`target segment` write from silently
 skipping the stage its named methodology requires, and strengthens
 (never replaces) core canon's §20 record fields.
+
+`marketing/hooks/lib/role-config.sh`, a pre-core-landing stub for a
+record-fields contract nothing ever consumed, was retired in issue #13;
+role-record-fields config is core's canon to own once that integration is
+actually scoped. `tests/run-gate-tests.sh` also mechanically enforces that
+every `.claude-plugin/plugin.json`'s `name` equals its containing
+directory name and that no legacy role-name pattern has reappeared,
+instead of relying on a one-time manual grep.
