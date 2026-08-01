@@ -6,7 +6,8 @@
 # directive fragments, is defined here (per docs/issue-7 plugin-set design:
 # marketing itself owns orchestration only, not per-field methodology text).
 set -uo pipefail
-source "${CLAUDE_PLUGIN_ROOT}/../core/hooks/lib/role-directive.sh"
+. "${CLAUDE_PLUGIN_ROOT_CORE:-${CLAUDE_PLUGIN_ROOT}/../core}/hooks/lib/role-directive.sh" \
+  || { echo "marketing: cannot source role-directive.sh" >&2; exit 2; }
 
 # Each methodology plugin is self-contained and sources into this role's
 # directive rather than being vendored here. A missing fragment (plugin not

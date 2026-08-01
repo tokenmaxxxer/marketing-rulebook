@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-__fc(){ rc=$?; if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then echo "fail-closed: gate aborted (rc=$rc)" >&2; exit 2; fi; }
-trap __fc EXIT
-# PreToolUse gate (Write|Edit|MultiEdit) — marketing-role-specific, on top of
+# Sources core's gate-lib.sh (docs/handbooks/gate-house-standard.md) for the
+# shared fail-closed trap, kill-switch convention, and Bash-write-target
+# detection, instead of hand-rolling them locally.
+. "${CLAUDE_PLUGIN_ROOT_CORE:-${CLAUDE_PLUGIN_ROOT}/../core}/hooks/lib/gate-lib.sh" \
+  || { echo "messaging-gate.sh: cannot source gate-lib.sh" >&2; exit 2; }
+gate_trap_fail_closed
+# PreToolUse gate (Write|Edit|MultiEdit|Bash) — marketing-role-specific, on top of
 # (never instead of) the core canon record-fields-gate.sh's generic §20
 # fields.
 #
@@ -28,12 +32,9 @@ trap __fc EXIT
 set -uo pipefail
 
 role="${CLAUDE_ROLE:-marketing}"
-deny() { echo "${role}: refused — $1" >&2; exit 2; }
+deny() { gate_deny "$role" "$1"; }
 
-case "${MARKETING_MESSAGING_GATE_OFF:-}" in
-  1|true|yes|on) exit 0 ;;   # explicit, recognized opt-out only
-  *) ;;                      # empty, "0", or any unrecognized value -> ACTIVE
-esac
+gate_kill_switch_active "${MARKETING_MESSAGING_GATE_OFF:-}" || { trap - EXIT; exit 0; }
 
 command -v python3 >/dev/null 2>&1 || deny "messaging-gate.sh requires python3, which is not on PATH; denying rather than guessing."
 
@@ -50,6 +51,38 @@ if isinstance(ti,dict):
         v=ti.get(k)
         if isinstance(v,str) and v: print(v); break
 ' 2>/dev/null || true)"
+
+# Bash-write coverage (issue #13 defect: matcher/code parity) — a Bash
+# command writing to a gated path (cat >, tee, >>) must be caught the same
+# way a Write/Edit/MultiEdit call is, via core's gate_bash_write_targets.
+_tool_name="$(printf '%s' "$payload" | python3 -c '
+import json,sys
+try: e=json.loads(sys.stdin.read())
+except Exception: sys.exit(0)
+print(e.get("tool_name","") if isinstance(e,dict) else "")
+' 2>/dev/null || true)"
+
+_bash_target=""
+if [ "$_tool_name" = "Bash" ]; then
+  _cmd="$(printf '%s' "$payload" | python3 -c '
+import json,sys
+try: e=json.loads(sys.stdin.read())
+except Exception: sys.exit(0)
+ti=e.get("tool_input") if isinstance(e,dict) else None
+v=ti.get("command") if isinstance(ti,dict) else None
+print(v) if isinstance(v,str) else None
+' 2>/dev/null || true)"
+  if [ -n "$_cmd" ]; then
+    while IFS= read -r _tok; do
+      case "$_tok" in
+        *docs/issue-*/proposals/*marketing*.md|*docs/issue-*/reports/marketing.md) _bash_target="$_tok" ;;
+      esac
+    done <<BASHTOK
+$(gate_bash_write_targets "$_cmd")
+BASHTOK
+  fi
+fi
+[ -n "$_bash_target" ] && _target="$_bash_target"
 
 _plausible() { [ -n "$1" ] && [ -d "$1" ] && { [ -e "$1/.git" ] || [ -f "$1/docs/specs/role-handoff-contract.md" ]; }; }
 _under() {
@@ -76,11 +109,14 @@ fi
 [ -z "$root" ] && root="$(git -C "$(pwd -P)" rev-parse --show-toplevel 2>/dev/null || true)"
 [ -z "$root" ] && deny "no project root could be determined; failing closed (methodology check cannot run)."
 
-PG_PAYLOAD="$payload" PG_ROOT="$root" \
+PG_PAYLOAD="$payload" PG_ROOT="$root" PG_BASH_TARGET="$_bash_target" \
 python3 <<'PY'
 import sys as _fc_sys  # fail-closed-on-internal-error
 try:
-    import json, os, posixpath, re, sys
+    import json, os, posixpath, re, sys, importlib.util
+
+    _spec = importlib.util.spec_from_file_location("gate_lib", os.environ["GATE_LIB_PY"])
+    gate_lib = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(gate_lib)
 
     def deny(m):
         sys.stderr.write("marketing: refused — %s\n" % m); sys.exit(2)
@@ -116,6 +152,10 @@ try:
         p = ti.get("file_path")
         if isinstance(p, str) and p:
             path = p
+    elif tool == "Bash":
+        p = os.environ.get("PG_BASH_TARGET") or None
+        if p:
+            path = p
     if path is None:
         sys.exit(0)
 
@@ -135,28 +175,8 @@ try:
             deny("%s exists but cannot be read; failing closed on the messaging doc." % rel)
 
     new_text = None
-    if tool == "Write":
-        c = ti.get("content")
-        if isinstance(c, str):
-            new_text = c
-    elif tool == "Edit":
-        o, n = ti.get("old_string"), ti.get("new_string")
-        if isinstance(o, str) and isinstance(n, str) and current is not None and o in current:
-            new_text = current.replace(o, n) if ti.get("replace_all") else current.replace(o, n, 1)
-    elif tool == "MultiEdit":
-        edits = ti.get("edits")
-        text = current
-        if isinstance(edits, list) and text is not None:
-            ok = True
-            for e in edits:
-                if not isinstance(e, dict):
-                    ok = False; break
-                o, n = e.get("old_string"), e.get("new_string")
-                if not isinstance(o, str) or not isinstance(n, str) or o not in text:
-                    ok = False; break
-                text = text.replace(o, n) if e.get("replace_all") else text.replace(o, n, 1)
-            if ok:
-                new_text = text
+    if tool in ("Write", "Edit", "MultiEdit"):
+        new_text, _ok = gate_lib.gate_reconstruct_write(tool, ti, current)
 
     if new_text is None:
         deny(
@@ -200,12 +220,28 @@ try:
     def has_any(*needles):
         return any(nd in low for nd in needles)
 
-    def near(cue_pattern, anchor_pattern, window_lines=3):
-        lines = section.splitlines()
-        cue_lines = [i for i, l in enumerate(lines) if re.search(cue_pattern, l, re.I)]
-        for i in cue_lines:
-            window = "\n".join(lines[max(0, i - window_lines):i + window_lines + 1])
-            if re.search(anchor_pattern, window):
+    # near() — issue #13 defect 4 fix: the anchor is scoped to a fixed
+    # character window from each cue match's OWN position (not the whole
+    # ±N-line block, which let any sentence-initial capital in the window
+    # satisfy the check regardless of proximity to the cue), and a
+    # candidate capitalized token is excluded when it is the first word of
+    # its own sentence (preceded by ". "/"! "/"? " or line-start), so
+    # ordinary sentence-initial capitalization no longer counts as a named
+    # alternative/competitor.
+    def near(cue_pattern, window_chars=120):
+        for m in re.finditer(cue_pattern, section, re.I):
+            start = max(0, m.start() - window_chars)
+            end = min(len(section), m.end() + window_chars)
+            ctx = section[start:end]
+            if re.search(r'(?m)^\s*[-*]\s', ctx):
+                return True
+            for cm in re.finditer(r'[A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*', ctx):
+                abs_pos = start + cm.start()
+                if abs_pos == m.start():
+                    continue
+                pre = section[max(0, abs_pos - 2):abs_pos]
+                if abs_pos == 0 or re.search(r'[.!?]\s$', pre) or pre.endswith('\n'):
+                    continue
                 return True
         return False
 
@@ -214,15 +250,24 @@ try:
     # a) competitive-alternatives: a labeled block passes outright;
     # otherwise the "vs./compared to/instead of/alternative" cue must sit
     # near a list item or a named (capitalized) alternative — a bare "vs."
-    # floating alone no longer counts (issue #10 defect 3).
+    # floating alone no longer counts (issue #10 defect 3). The "vs." cue
+    # used a trailing \b right after the literal dot, which never matches
+    # the common "vs. Name" punctuation (a word boundary requires a
+    # \w/\W transition, but "." followed by a space is \W/\W); fixed with
+    # a lookahead on whitespace/end instead (issue #13 defect 2).
     if not re.search(r'(?im)^\s*(competitive alternatives?|alternatives? considered)\s*:', low):
-        cue = r'\b(vs\.|compared to|instead of|alternatives?)\b'
-        anchor = r'(^\s*[-*]\s)|([A-Z][a-zA-Z0-9]*(\s+[A-Z][a-zA-Z0-9]*)*)'
-        if not near(cue, anchor):
+        cue = r'\bvs\.(?=\s|$)|\b(?:compared to|instead of|alternatives?)\b'
+        if not near(cue):
             missing.append("competitive-alternatives")
 
-    # b) unique-attributes language
-    if not has_any("unique attribute", "differentiat", "only we", "unlike"):
+    # b) unique-attributes language: "unlike" (and its cue-mates) must sit
+    # near an anchor naming an actual attribute/competitor, not merely
+    # appear anywhere in the section as a bare substring — the same
+    # proximity requirement competitive-alternatives already has (issue #13
+    # defect 3; this also fixes the "unlikely" substring false-positive,
+    # since a real anchor can't be satisfied by an unrelated word
+    # fragment).
+    if not near(r'\b(?:unlike|differentiat\w*|unique attributes?|only we)\b'):
         missing.append("unique-attributes")
 
     # c) per-segment value-prop language: "segment" AND ("value prop" OR "benefit")

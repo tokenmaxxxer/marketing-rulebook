@@ -207,5 +207,72 @@ rc_abs="${PIPESTATUS[1]}"; case "$rc_abs" in 0) got_abs=allow ;; 2) got_abs=deny
 report allow "$got_abs" msg-absolute-path-sibling-not-root
 rm -rf "$td_abs" "$evil_dir"
 
+# --- issue #13 group 7: missing-core -> guarded source must deny (fail
+# closed), not silently allow, per core's seven-group harness shape. Each
+# gate now sources gate-lib.sh independently, so each gets its own case.
+missing_core_gate() { # want name gate-script content
+  td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"; mkdir -p "$td/docs/issue-7/reports"
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Write","tool_input":{"file_path":sys.argv[1],"content":sys.argv[2]}}))' "$REC" "$4")"
+  printf '%s' "$payload" | env CLAUDE_PROJECT_DIR="$td" CLAUDE_PLUGIN_ROOT_CORE="$td/no-such-core" /bin/bash "$ROOT/$3" >/dev/null 2>&1
+  rc="${PIPESTATUS[1]}"; case "$rc" in 0) got=allow ;; 2) got=deny ;; *) got="exit-$rc" ;; esac
+  rm -rf "$td"; report "$1" "$got" "$2"
+}
+missing_core_gate deny msg-missing-core "$MSG_GATE" "$MSG_GOOD"
+missing_core_gate deny ch-missing-core "$CH_GATE" "$CH_GOOD"
+missing_core_gate deny seg-missing-core "$SEG_GATE" "$SEG_GOOD"
+
+td="$(cd "$(mktemp -d)" && pwd -P)"
+env CLAUDE_PLUGIN_ROOT="$ROOT/marketing" CLAUDE_PLUGIN_ROOT_CORE="$td/no-such-core" \
+  /bin/bash "$ROOT/marketing/hooks/directive.sh" </dev/null >/dev/null 2>&1
+rc=$?
+got=$([ "$rc" = 2 ] && echo deny || echo "exit-$rc")
+report deny "$got" directive-missing-core
+rm -rf "$td"
+
+# --- issue #13: Bash-write matcher/code parity — a Bash redirect targeting
+# a gated path must be caught the same way a Write call would be (denied,
+# since the gate cannot determine the resulting content from a shell
+# command; per-gate handling mirrors the Write/Edit/MultiEdit "cannot
+# determine resulting content" deny path).
+bash_write_deny() { # want name gate-script
+  td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"; mkdir -p "$td/docs/issue-7/reports"
+  cmd="echo hi >> $REC"
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$cmd")"
+  printf '%s' "$payload" | env CLAUDE_PROJECT_DIR="$td" /bin/bash "$ROOT/$3" >/dev/null 2>&1
+  rc="${PIPESTATUS[1]}"; case "$rc" in 0) got=allow ;; 2) got=deny ;; *) got="exit-$rc" ;; esac
+  rm -rf "$td"; report "$1" "$got" "$2"
+}
+bash_write_deny deny msg-bash-write-coverage "$MSG_GATE"
+bash_write_deny deny ch-bash-write-coverage "$CH_GATE"
+bash_write_deny deny seg-bash-write-coverage "$SEG_GATE"
+
+# --- issue #13: README/manifest hygiene — mechanical hard-fail, not a
+# manual grep. Every plugin manifest's "name" field must equal its
+# containing directory name, and any legacy role-name pattern this repo
+# has ever carried is a hard error if it reappears.
+manifest_name_check() {
+  fail_local=0
+  for pj in "$ROOT"/*/.claude-plugin/plugin.json; do
+    [ -f "$pj" ] || continue
+    dir="$(basename "$(dirname "$(dirname "$pj")")")"
+    name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name",""))' "$pj")"
+    if [ "$name" != "$dir" ]; then
+      echo "FAIL   manifest-name-mismatch          $pj: name=$name dir=$dir" >&2
+      fail_local=1
+    fi
+  done
+  legacy_hits="$(grep -rniE 'marketing-role|role-marketing|marketing_role' "$ROOT/README.md" "$ROOT"/*/.claude-plugin/plugin.json 2>/dev/null || true)"
+  if [ -n "$legacy_hits" ]; then
+    echo "FAIL   legacy-role-name-found            $legacy_hits" >&2
+    fail_local=1
+  fi
+  if [ "$fail_local" -eq 0 ]; then
+    pass=$((pass+1)); printf 'ok     %-34s %s\n' manifest-and-legacy-name-clean pass
+  else
+    fail=$((fail+1)); printf 'FAIL   %-34s %s\n' manifest-and-legacy-name-clean fail
+  fi
+}
+manifest_name_check
+
 printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
