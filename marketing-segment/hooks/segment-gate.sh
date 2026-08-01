@@ -10,21 +10,29 @@ trap __fc EXIT
 # write surfaces per docs/issue-1/proposals/rulebook-maturation.md §b
 # (target segment row).
 #
-# Requires that, when the write introduces a "target segment" section, the
-# content name segmentation criteria, define a concrete ICP (not a bare
-# demographic label), and state targeting rationale against alternative
-# segments. Fails closed when a required element is absent, mirroring the
-# reference methodology-gate.sh's fail-closed pattern.
+# Fires whenever the write targets an in-scope path. If the reconstructed
+# new content carries no recognizable target-segment section (heading,
+# bold label, or bare marker), the write is DENIED — an in-scope write
+# that omits the field entirely is not exempt (issue #10 defect 1 fix);
+# once a section is found, checks are scoped to that section's span only,
+# not the whole document (issue #10 defect 3 fix).
 #
-# Kill switch: export MARKETING_SEGMENT_GATE_OFF=1
+# Requires that the section name segmentation criteria, define a concrete
+# ICP (not a bare demographic label), and state targeting rationale
+# against alternative segments. Fails closed when a required element is
+# absent, mirroring the reference methodology-gate.sh's fail-closed
+# pattern.
+#
+# Kill switch: export MARKETING_SEGMENT_GATE_OFF=<1|true|yes|on>
+# Any other value (including unset/empty/garbage) leaves the gate ACTIVE.
 set -uo pipefail
 
 role="${CLAUDE_ROLE:-marketing}"
 deny() { echo "${role}: refused — $1" >&2; exit 2; }
 
 case "${MARKETING_SEGMENT_GATE_OFF:-}" in
-  ""|0|false|no|off) ;;
-  *) exit 0 ;;
+  1|true|yes|on) exit 0 ;;   # explicit, recognized opt-out only
+  *) ;;                      # empty, "0", or any unrecognized value -> ACTIVE
 esac
 
 command -v python3 >/dev/null 2>&1 || deny "segment-gate.sh requires python3, which is not on PATH; denying rather than guessing."
@@ -112,7 +120,7 @@ try:
         sys.exit(0)
 
     r = resolve(path)
-    if not r.startswith(root + "/"):
+    if r != root and not r.startswith(root + "/"):
         sys.exit(0)
     rel = r[len(root):].lstrip("/")
     if not (PROPOSAL_RE.match(rel) or RECORD_RE.match(rel)):
@@ -134,7 +142,7 @@ try:
     elif tool == "Edit":
         o, n = ti.get("old_string"), ti.get("new_string")
         if isinstance(o, str) and isinstance(n, str) and current is not None and o in current:
-            new_text = current.replace(o, n, 1)
+            new_text = current.replace(o, n) if ti.get("replace_all") else current.replace(o, n, 1)
     elif tool == "MultiEdit":
         edits = ti.get("edits")
         text = current
@@ -146,7 +154,7 @@ try:
                 o, n = e.get("old_string"), e.get("new_string")
                 if not isinstance(o, str) or not isinstance(n, str) or o not in text:
                     ok = False; break
-                text = text.replace(o, n, 1)
+                text = text.replace(o, n) if e.get("replace_all") else text.replace(o, n, 1)
             if ok:
                 new_text = text
 
@@ -158,15 +166,44 @@ try:
             "checked." % (rel, tool)
         )
 
-    low = new_text.lower()
+    # --- section location, same three-layer approach as messaging-gate.sh
+    SECTION_RES = (
+        r'(?im)^#{1,6}[ \t]*target[ \t-]*segment\b.*$',
+        r'(?im)^\*\*[ \t]*target[ \t-]*segment[ \t]*:?\*\*',
+        r'(?im)\btarget[ \t-]segment\b',
+    )
 
-    # If the write has no target-segment section at all, this gate has
-    # nothing to check — exit silently.
-    if not ("target segment" in low or "target-segment" in low):
-        sys.exit(0)
+    def find_section(text):
+        for pat in SECTION_RES:
+            m = re.search(pat, text)
+            if m:
+                nxt = re.search(r'(?m)^#{1,6}[ \t]', text[m.end():])
+                end = m.end() + nxt.start() if nxt else len(text)
+                return text[m.start():end]
+        return None
+
+    section = find_section(new_text)
+    if section is None:
+        deny(
+            "this write targets %s, a marketing record/proposal path, but no "
+            "target-segment section (heading, bold label, or bare marker) was found "
+            "in the resulting content; a marketing write surface must carry its "
+            "methodology field explicitly, even to say it is deferred." % rel
+        )
+
+    low = section.lower()
 
     def has_any(*needles):
         return any(nd in low for nd in needles)
+
+    def near(cue_pattern, anchor_pattern, window_lines=3):
+        lines = section.splitlines()
+        cue_lines = [i for i, l in enumerate(lines) if re.search(cue_pattern, l, re.I)]
+        for i in cue_lines:
+            window = "\n".join(lines[max(0, i - window_lines):i + window_lines + 1])
+            if re.search(anchor_pattern, window):
+                return True
+        return False
 
     CRITERIA = ("demographic", "firmographic", "behavioral", "psychographic")
     criteria_present = [c for c in CRITERIA if c in low]
@@ -183,9 +220,15 @@ try:
     if not (icp_marker or len(criteria_present) >= 2):
         missing.append("icp-definition")
 
-    # c) targeting-rationale language
-    if not has_any("why this segment", "rather than", "over other segment", "over the", " vs "):
-        missing.append("targeting-rationale")
+    # c) targeting-rationale language: a labeled reasoning phrase, or the
+    # bare "vs" cue anchored near a named (capitalized) alternative segment
+    # or list item — a lone "vs" with nothing beside it no longer counts
+    # (issue #10 defect 3 fix, applied to this field's cue too).
+    if not has_any("why this segment", "rather than", "over other segment", "over the"):
+        cue = r'(^|\s)vs(\.|\s|$)'
+        anchor = r'(^\s*[-*]\s)|([A-Z][a-zA-Z0-9]*(\s+[A-Z][a-zA-Z0-9]*)*)'
+        if not near(cue, anchor):
+            missing.append("targeting-rationale")
 
     if missing:
         deny(
