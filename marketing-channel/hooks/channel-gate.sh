@@ -10,21 +10,31 @@ trap __fc EXIT
 # write surfaces per docs/issue-1/proposals/rulebook-maturation.md §b
 # (channel plan row).
 #
+# Fires whenever the write targets an in-scope path. If the reconstructed
+# new content carries no recognizable channel-plan section (heading, bold
+# label, or bare marker), the write is DENIED — an in-scope write that
+# omits the field entirely is not exempt (issue #10 defect 1 fix); once a
+# section is found, checks are scoped to that section's span only, not the
+# whole document (issue #10 defect 3 fix).
+#
 # Enforces the Bullseye Framework 3-phase test (Weinberg & Mares, "Traction",
 # 2015) for the channel-plan field specifically: candidate channels must be
 # brainstormed and shown before a channel is selected, each candidate must
 # carry test criteria/rationale, the chosen channel must carry its own
-# rationale, and the plan must classify channels as owned/earned/paid.
+# rationale, and the plan must classify EVERY listed channel as owned,
+# earned, AND paid (all three labels required, issue #10 defect 2 fix — a
+# single "paid" mention no longer satisfies all three axes).
 #
-# Kill switch: export MARKETING_CHANNEL_GATE_OFF=1
+# Kill switch: export MARKETING_CHANNEL_GATE_OFF=<1|true|yes|on>
+# Any other value (including unset/empty/garbage) leaves the gate ACTIVE.
 set -uo pipefail
 
 role="${CLAUDE_ROLE:-marketing}"
 deny() { echo "${role}: refused — $1" >&2; exit 2; }
 
 case "${MARKETING_CHANNEL_GATE_OFF:-}" in
-  ""|0|false|no|off) ;;
-  *) exit 0 ;;
+  1|true|yes|on) exit 0 ;;   # explicit, recognized opt-out only
+  *) ;;                      # empty, "0", or any unrecognized value -> ACTIVE
 esac
 
 command -v python3 >/dev/null 2>&1 || deny "channel-gate.sh requires python3, which is not on PATH; denying rather than guessing."
@@ -112,7 +122,7 @@ try:
         sys.exit(0)
 
     r = resolve(path)
-    if not r.startswith(root + "/"):
+    if r != root and not r.startswith(root + "/"):
         sys.exit(0)
     rel = r[len(root):].lstrip("/")
     if not (PROPOSAL_RE.match(rel) or RECORD_RE.match(rel)):
@@ -134,7 +144,7 @@ try:
     elif tool == "Edit":
         o, n = ti.get("old_string"), ti.get("new_string")
         if isinstance(o, str) and isinstance(n, str) and current is not None and o in current:
-            new_text = current.replace(o, n, 1)
+            new_text = current.replace(o, n) if ti.get("replace_all") else current.replace(o, n, 1)
     elif tool == "MultiEdit":
         edits = ti.get("edits")
         text = current
@@ -146,7 +156,7 @@ try:
                 o, n = e.get("old_string"), e.get("new_string")
                 if not isinstance(o, str) or not isinstance(n, str) or o not in text:
                     ok = False; break
-                text = text.replace(o, n, 1)
+                text = text.replace(o, n) if e.get("replace_all") else text.replace(o, n, 1)
             if ok:
                 new_text = text
 
@@ -158,17 +168,35 @@ try:
             "checked." % (rel, tool)
         )
 
-    low = new_text.lower()
+    # --- section location, same three-layer approach as messaging-gate.sh
+    SECTION_RES = (
+        r'(?im)^#{1,6}[ \t]*channel[ \t-]*plan\b.*$',
+        r'(?im)^\*\*[ \t]*channel[ \t-]*plan[ \t]*:?\*\*',
+        r'(?im)\bchannel[ \t-]plan\b',
+    )
 
-    # Even on a matching write surface, only engage if the new content has a
-    # visible "channel plan" / "channel-plan" section marker.
-    if "channel plan" not in low and "channel-plan" not in low:
-        sys.exit(0)
+    def find_section(text):
+        for pat in SECTION_RES:
+            m = re.search(pat, text)
+            if m:
+                nxt = re.search(r'(?m)^#{1,6}[ \t]', text[m.end():])
+                end = m.end() + nxt.start() if nxt else len(text)
+                return text[m.start():end]
+        return None
+
+    section = find_section(new_text)
+    if section is None:
+        deny(
+            "this write targets %s, a marketing record/proposal path, but no "
+            "channel-plan section (heading, bold label, or bare marker) was found "
+            "in the resulting content; a marketing write surface must carry its "
+            "methodology field explicitly, even to say it is deferred." % rel
+        )
+
+    low = section.lower()
 
     def has_any(*needles):
         return any(nd in low for nd in needles)
-
-    missing = []
 
     CHANNEL_KEYWORDS = (
         "seo", "content marketing", "email", "paid search", "paid social",
@@ -182,6 +210,8 @@ try:
             return True
         found = {kw for kw in CHANNEL_KEYWORDS if kw in low}
         return len(found) >= 2
+
+    missing = []
 
     # a) candidate-channel list
     candidate_present = has_candidate_list()
@@ -197,9 +227,16 @@ try:
     if not chosen_present:
         missing.append("chosen-channel")
 
-    # d) owned/earned/paid classification
-    if not has_any("owned", "earned", "paid"):
-        missing.append("owned-earned-paid")
+    # d) owned/earned/paid classification — ALL THREE must each be attached
+    # to a label (":"/"-"/parenthesized), not merely mentioned anywhere in
+    # the section (issue #10 defect 2 fix).
+    def label_found(lbl):
+        return bool(re.search(r'\b%s\b\s*[:\-\u2013]' % lbl, low)) or bool(re.search(r'\(%s\)' % lbl, low))
+
+    labels_found = {lbl for lbl in ("owned", "earned", "paid") if label_found(lbl)}
+    if labels_found != {"owned", "earned", "paid"}:
+        missing_axes = sorted({"owned", "earned", "paid"} - labels_found)
+        missing.append("owned-earned-paid (missing: %s)" % ", ".join(missing_axes))
 
     # e) intra-field ordering check (Bullseye-specific): chosen without candidates
     ordering_violation = chosen_present and not candidate_present

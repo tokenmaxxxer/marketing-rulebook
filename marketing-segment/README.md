@@ -21,17 +21,27 @@ targeting:
 - `docs/issue-<n>/proposals/*marketing*.md` (phase-1 proposals)
 - `docs/issue-<n>/reports/marketing.md` (phase-2 record)
 
-It is silent (exit 0) on any other path, and silent on a matching path if
-the write's resulting content has no "target segment" / "target-segment"
-section marker at all. Only when a target-segment section is present does
-it require segmentation-criteria naming, an ICP definition, and targeting
-rationale — denying (exit 2) and listing exactly which element(s) are
-missing otherwise.
+It is silent (exit 0) on any other path — not this gate's business. On an
+in-scope path, the resulting content must carry a recognizable
+target-segment section (heading, bold label, or bare marker); if none is
+found, the write is **denied**, not silently allowed. Once a section is
+found, checks are scoped to that section's text span only, not the whole
+document, and require segmentation-criteria naming, an ICP definition, and
+targeting rationale — denying (exit 2) and listing exactly which
+element(s) are missing otherwise. The targeting-rationale check accepts a
+labeled reasoning phrase, or a bare `vs` cue only when it sits near a list
+item or a named (capitalized) alternative segment.
+
+`Edit`/`MultiEdit` writes are reconstructed against the file's current
+content, honoring each edit's own `replace_all` flag; the gate denies
+(rather than guessing) when an edit's `old_string` cannot be matched
+against the intermediate text.
 
 ## Kill switch
 
-`export MARKETING_SEGMENT_GATE_OFF=1` bypasses the gate entirely (same
-active/inactive convention as sibling rulebooks' methodology gates).
+`export MARKETING_SEGMENT_GATE_OFF=<1|true|yes|on>` bypasses the gate. Any
+other value — unset, empty, `"0"`, or anything unrecognized — leaves the
+gate **active**; the gate never fails open on a garbage value.
 
 ## Testing
 

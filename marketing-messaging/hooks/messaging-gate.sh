@@ -10,25 +10,29 @@ trap __fc EXIT
 # write surfaces per docs/issue-1/proposals/rulebook-maturation.md §b
 # (messaging doc row).
 #
-# Only fires when the reconstructed new content actually contains a
-# "messaging doc" / "messaging-doc" section marker; this gate checks that
-# section only, not the whole record file.
+# Fires whenever the write targets an in-scope path. If the reconstructed
+# new content carries no recognizable messaging-doc section (heading, bold
+# label, or bare marker), the write is DENIED — an in-scope write that
+# omits the field entirely is not exempt (issue #10 defect 1 fix); once a
+# section is found, checks are scoped to that section's span only, not the
+# whole document (issue #10 defect 3 fix).
 #
-# Requires the five Dunford positioning-canvas elements be present:
-# competitive alternatives, unique attributes, per-segment value
-# proposition, market category, and a one-line positioning statement.
+# Requires the five Dunford positioning-canvas elements be present within
+# that section: competitive alternatives, unique attributes, per-segment
+# value proposition, market category, and a one-line positioning statement.
 # Fails closed when a required element is absent, mirroring
 # record-fields-gate.sh's fail-closed pattern.
 #
-# Kill switch: export MARKETING_MESSAGING_GATE_OFF=1
+# Kill switch: export MARKETING_MESSAGING_GATE_OFF=<1|true|yes|on>
+# Any other value (including unset/empty/garbage) leaves the gate ACTIVE.
 set -uo pipefail
 
 role="${CLAUDE_ROLE:-marketing}"
 deny() { echo "${role}: refused — $1" >&2; exit 2; }
 
 case "${MARKETING_MESSAGING_GATE_OFF:-}" in
-  ""|0|false|no|off) ;;
-  *) exit 0 ;;
+  1|true|yes|on) exit 0 ;;   # explicit, recognized opt-out only
+  *) ;;                      # empty, "0", or any unrecognized value -> ACTIVE
 esac
 
 command -v python3 >/dev/null 2>&1 || deny "messaging-gate.sh requires python3, which is not on PATH; denying rather than guessing."
@@ -116,7 +120,7 @@ try:
         sys.exit(0)
 
     r = resolve(path)
-    if not r.startswith(root + "/"):
+    if r != root and not r.startswith(root + "/"):
         sys.exit(0)
     rel = r[len(root):].lstrip("/")
     if not (PROPOSAL_RE.match(rel) or RECORD_RE.match(rel)):
@@ -138,7 +142,7 @@ try:
     elif tool == "Edit":
         o, n = ti.get("old_string"), ti.get("new_string")
         if isinstance(o, str) and isinstance(n, str) and current is not None and o in current:
-            new_text = current.replace(o, n, 1)
+            new_text = current.replace(o, n) if ti.get("replace_all") else current.replace(o, n, 1)
     elif tool == "MultiEdit":
         edits = ti.get("edits")
         text = current
@@ -150,7 +154,7 @@ try:
                 o, n = e.get("old_string"), e.get("new_string")
                 if not isinstance(o, str) or not isinstance(n, str) or o not in text:
                     ok = False; break
-                text = text.replace(o, n, 1)
+                text = text.replace(o, n) if e.get("replace_all") else text.replace(o, n, 1)
             if ok:
                 new_text = text
 
@@ -162,24 +166,60 @@ try:
             "checked." % (rel, tool)
         )
 
-    low = new_text.lower()
+    # --- section location: heading / bold-label / bare marker, in that
+    # order of preference. Everything below this point is scoped to the
+    # matched section's span (up to the next markdown heading or EOF), not
+    # the whole document — this is what stops an unrelated "vs." elsewhere
+    # in the file from satisfying a field check (issue #10 defect 3).
+    SECTION_RES = (
+        r'(?im)^#{1,6}[ \t]*messaging[ \t-]*doc\b.*$',
+        r'(?im)^\*\*[ \t]*messaging[ \t-]*doc[ \t]*:?\*\*',
+        r'(?im)\bmessaging[ \t-]doc\b',
+    )
 
-    # Only checks the messaging-doc section; if there's no such section
-    # marker in the new content, this gate is not implicated.
-    if "messaging doc" not in low and "messaging-doc" not in low:
-        sys.exit(0)
+    def find_section(text):
+        for pat in SECTION_RES:
+            m = re.search(pat, text)
+            if m:
+                nxt = re.search(r'(?m)^#{1,6}[ \t]', text[m.end():])
+                end = m.end() + nxt.start() if nxt else len(text)
+                return text[m.start():end]
+        return None
+
+    section = find_section(new_text)
+    if section is None:
+        deny(
+            "this write targets %s, a marketing record/proposal path, but no "
+            "messaging-doc section (heading, bold label, or bare marker) was found "
+            "in the resulting content; a marketing write surface must carry its "
+            "methodology field explicitly, even to say it is deferred." % rel
+        )
+
+    low = section.lower()
 
     def has_any(*needles):
         return any(nd in low for nd in needles)
 
+    def near(cue_pattern, anchor_pattern, window_lines=3):
+        lines = section.splitlines()
+        cue_lines = [i for i, l in enumerate(lines) if re.search(cue_pattern, l, re.I)]
+        for i in cue_lines:
+            window = "\n".join(lines[max(0, i - window_lines):i + window_lines + 1])
+            if re.search(anchor_pattern, window):
+                return True
+        return False
+
     missing = []
 
-    # a) competitive-alternatives language
-    if not has_any(
-        "competitive alternative", "competing alternative", "alternative(s) considered",
-        "alternatives considered", "compared to", "vs.", "instead of",
-    ):
-        missing.append("competitive-alternatives")
+    # a) competitive-alternatives: a labeled block passes outright;
+    # otherwise the "vs./compared to/instead of/alternative" cue must sit
+    # near a list item or a named (capitalized) alternative — a bare "vs."
+    # floating alone no longer counts (issue #10 defect 3).
+    if not re.search(r'(?im)^\s*(competitive alternatives?|alternatives? considered)\s*:', low):
+        cue = r'\b(vs\.|compared to|instead of|alternatives?)\b'
+        anchor = r'(^\s*[-*]\s)|([A-Z][a-zA-Z0-9]*(\s+[A-Z][a-zA-Z0-9]*)*)'
+        if not near(cue, anchor):
+            missing.append("competitive-alternatives")
 
     # b) unique-attributes language
     if not has_any("unique attribute", "differentiat", "only we", "unlike"):
